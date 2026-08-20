@@ -2,8 +2,9 @@
 
 import { useRef, useState } from "react";
 import { extractTextFromFile } from "@/lib/extractFromFile";
+import LyricsImport from "@/components/LyricsImport";
 
-type Mode = "single" | "bulk";
+type Mode = "single" | "bulk" | "lyrics";
 type Status = { type: "success" | "error"; text: string } | null;
 
 export default function AddPage() {
@@ -119,6 +120,14 @@ export default function AddPage() {
         >
           Списком
         </button>
+        <button
+          onClick={() => setMode("lyrics")}
+          className={`flex-1 rounded-lg py-2 text-sm font-medium transition-colors ${
+            mode === "lyrics" ? "bg-white shadow text-slate-900" : "text-slate-500"
+          }`}
+        >
+          Из текста
+        </button>
       </div>
 
       {mode === "single" ? (
@@ -150,6 +159,14 @@ export default function AddPage() {
             Добавить
           </button>
         </form>
+      ) : mode === "lyrics" ? (
+        <LyricsImport
+          onLinesReady={(lines) => {
+            setBulk((prev) => (prev.trim() ? `${prev}\n${lines}` : lines));
+            setMode("bulk");
+            setStatus({ type: "success", text: "Слова переведены — проверь список ниже перед добавлением" });
+          }}
+        />
       ) : (
         <form onSubmit={submitBulk} className="space-y-3">
           <div className="rounded-xl border border-dashed border-slate-300 p-4 text-center space-y-2">
