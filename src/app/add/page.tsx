@@ -173,7 +173,7 @@ export default function AddPage() {
             <input
               ref={fileInputRef}
               type="file"
-              accept="image/*,.xlsx,.xls,.csv,.tsv,.txt,.docx"
+              accept="image/*,.xlsx,.xls,.csv,.tsv,.txt,.docx,.pdf"
               onChange={handleFile}
               disabled={extracting}
               className="hidden"
@@ -185,11 +185,12 @@ export default function AddPage() {
                 extracting ? "opacity-50" : "cursor-pointer text-slate-700"
               }`}
             >
-              {extracting ? extractStatus || "Обрабатываю…" : "📎 Загрузить фото, таблицу или .docx"}
+              {extracting ? extractStatus || "Обрабатываю…" : "📎 Загрузить фото, таблицу, .docx или .pdf"}
             </label>
             <p className="text-xs text-slate-400">
-              Скриншот словаря, .xlsx/.csv таблица или Word-документ — текст распознается
-              и появится в поле ниже для проверки
+              Скриншот словаря, .xlsx/.csv таблица, Word-документ или PDF — текст распознается
+              и появится в поле ниже для проверки. Скан без текстового слоя в PDF тоже
+              распознается (может занять больше времени)
             </p>
           </div>
 

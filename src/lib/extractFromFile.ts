@@ -129,6 +129,89 @@ async function extractFromDocx(file: File): Promise<string> {
   return lines.join("\n");
 }
 
+async function extractFromScannedPdf(
+  pdf: import("pdfjs-dist").PDFDocumentProxy,
+  onProgress?: ExtractProgress
+): Promise<string> {
+  const Tesseract = await import("tesseract.js");
+  const lines: string[] = [];
+
+  for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+    const page = await pdf.getPage(pageNum);
+    const viewport = page.getViewport({ scale: 2 });
+    const canvas = document.createElement("canvas");
+    canvas.width = viewport.width;
+    canvas.height = viewport.height;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) continue;
+    await page.render({ canvasContext: ctx, viewport }).promise;
+
+    const { data } = await Tesseract.recognize(canvas, "eng+rus", {
+      logger: (m) => {
+        if (onProgress && m.status) {
+          const pct = typeof m.progress === "number" ? ` ${Math.round(m.progress * 100)}%` : "";
+          onProgress(`скан, стр. ${pageNum}/${pdf.numPages}: ${m.status}${pct}`);
+        }
+      },
+    });
+    lines.push(data.text);
+  }
+
+  return lines.join("\n");
+}
+
+async function extractFromPdf(file: File, onProgress?: ExtractProgress): Promise<string> {
+  const pdfjsLib = await import("pdfjs-dist");
+  pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
+    "pdfjs-dist/build/pdf.worker.min.mjs",
+    import.meta.url
+  ).toString();
+
+  const buf = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+
+  const allLines: string[] = [];
+  let totalChars = 0;
+
+  for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+    onProgress?.(`читаю страницу ${pageNum}/${pdf.numPages}…`);
+    const page = await pdf.getPage(pageNum);
+    const textContent = await page.getTextContent();
+
+    // PDFs have no real "lines" — reconstruct them by bucketing text items
+    // that sit at (roughly) the same vertical position, then order left to right.
+    const lineMap = new Map<number, { x: number; str: string }[]>();
+    for (const item of textContent.items) {
+      if (!("str" in item) || !item.str.trim()) continue;
+      const y = Math.round(item.transform[5] / 2) * 2;
+      const bucket = lineMap.get(y) ?? [];
+      bucket.push({ x: item.transform[4], str: item.str });
+      lineMap.set(y, bucket);
+    }
+
+    const pageLines = Array.from(lineMap.entries())
+      .sort((a, b) => b[0] - a[0])
+      .map(([, parts]) =>
+        parts
+          .sort((a, b) => a.x - b.x)
+          .map((p) => p.str)
+          .join(" ")
+          .trim()
+      )
+      .filter(Boolean);
+
+    allLines.push(...pageLines);
+    totalChars += pageLines.join("").length;
+  }
+
+  if (totalChars < 20) {
+    onProgress?.("текстовый слой не найден — распознаю как скан…");
+    return extractFromScannedPdf(pdf, onProgress);
+  }
+
+  return allLines.join("\n");
+}
+
 export async function extractTextFromFile(file: File, onProgress?: ExtractProgress): Promise<string> {
   const name = file.name.toLowerCase();
 
@@ -147,6 +230,10 @@ export async function extractTextFromFile(file: File, onProgress?: ExtractProgre
   if (name.endsWith(".docx")) {
     onProgress?.("читаю документ…");
     return extractFromDocx(file);
+  }
+  if (name.endsWith(".pdf")) {
+    onProgress?.("открываю PDF…");
+    return extractFromPdf(file, onProgress);
   }
   // tsv / txt and anything else plain-text
   onProgress?.("читаю файл…");
