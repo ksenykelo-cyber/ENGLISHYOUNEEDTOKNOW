@@ -2,38 +2,61 @@ import { promises as fs } from "fs";
 import path from "path";
 import { Word } from "./types";
 
-// Storage backend:
-// - On Vercel (or anywhere with Redis env vars set), words are stored in Upstash Redis
-//   so they persist across requests and are shared between your phone and computer.
-// - Locally, without those env vars, words are stored in a JSON file on disk so
-//   `npm run dev` works out of the box with no setup.
+// Storage backend, tried in this order:
+// - REDIS_URL (standard redis:// connection string — what Vercel's "Redis" /
+//   Redis Cloud marketplace integration provisions)
+// - Upstash REST API vars (KV_REST_API_URL/TOKEN or UPSTASH_REDIS_REST_URL/TOKEN —
+//   what Vercel's older KV product / a standalone Upstash integration provisions)
+// - a local JSON file, so `npm run dev` works out of the box with no setup.
+// Either Redis path makes words persist across requests and be shared between
+// your phone and computer; the file fallback only works for local development.
 
 const REDIS_KEY = "english-word-trainer:words";
 const DATA_FILE = path.join(process.cwd(), "data", "words.json");
 
-function getRedisCredentials(): { url: string; token: string } | null {
-  const url = process.env.UPSTASH_REDIS_REST_URL ?? process.env.KV_REST_API_URL;
-  const token = process.env.UPSTASH_REDIS_REST_TOKEN ?? process.env.KV_REST_API_TOKEN;
-  if (url && token) return { url, token };
-  return null;
+type Backend = "redis-url" | "redis-rest" | "file";
+
+function getBackend(): Backend {
+  if (process.env.REDIS_URL) return "redis-url";
+  const restUrl = process.env.UPSTASH_REDIS_REST_URL ?? process.env.KV_REST_API_URL;
+  const restToken = process.env.UPSTASH_REDIS_REST_TOKEN ?? process.env.KV_REST_API_TOKEN;
+  if (restUrl && restToken) return "redis-rest";
+  return "file";
 }
 
 export function isRedisConfigured(): boolean {
-  return getRedisCredentials() !== null;
+  return getBackend() !== "file";
 }
 
-let redisClientPromise: Promise<import("@upstash/redis").Redis> | null = null;
+let tcpClientPromise: Promise<import("redis").RedisClientType> | null = null;
 
-async function getRedis() {
-  if (!redisClientPromise) {
-    redisClientPromise = (async () => {
-      const { Redis } = await import("@upstash/redis");
-      const creds = getRedisCredentials();
-      if (!creds) throw new Error("Redis is not configured");
-      return new Redis({ url: creds.url, token: creds.token });
+async function getTcpClient() {
+  if (!tcpClientPromise) {
+    tcpClientPromise = (async () => {
+      const { createClient } = await import("redis");
+      const client = createClient({ url: process.env.REDIS_URL });
+      client.on("error", (err) => console.error("Redis client error", err));
+      await client.connect();
+      return client;
     })();
   }
-  return redisClientPromise;
+  const client = await tcpClientPromise;
+  if (!client.isOpen) await client.connect();
+  return client;
+}
+
+let restClientPromise: Promise<import("@upstash/redis").Redis> | null = null;
+
+async function getRestClient() {
+  if (!restClientPromise) {
+    restClientPromise = (async () => {
+      const { Redis } = await import("@upstash/redis");
+      const url = process.env.UPSTASH_REDIS_REST_URL ?? process.env.KV_REST_API_URL!;
+      const token = process.env.UPSTASH_REDIS_REST_TOKEN ?? process.env.KV_REST_API_TOKEN!;
+      return new Redis({ url, token });
+    })();
+  }
+  return restClientPromise;
 }
 
 async function readAllFromFile(): Promise<Word[]> {
@@ -52,8 +75,14 @@ async function writeAllToFile(words: Word[]): Promise<void> {
 }
 
 export async function getAllWords(): Promise<Word[]> {
-  if (isRedisConfigured()) {
-    const redis = await getRedis();
+  const backend = getBackend();
+  if (backend === "redis-url") {
+    const client = await getTcpClient();
+    const raw = await client.get(REDIS_KEY);
+    return raw ? (JSON.parse(raw) as Word[]) : [];
+  }
+  if (backend === "redis-rest") {
+    const redis = await getRestClient();
     const words = await redis.get<Word[]>(REDIS_KEY);
     return words ?? [];
   }
@@ -61,8 +90,14 @@ export async function getAllWords(): Promise<Word[]> {
 }
 
 export async function saveAllWords(words: Word[]): Promise<void> {
-  if (isRedisConfigured()) {
-    const redis = await getRedis();
+  const backend = getBackend();
+  if (backend === "redis-url") {
+    const client = await getTcpClient();
+    await client.set(REDIS_KEY, JSON.stringify(words));
+    return;
+  }
+  if (backend === "redis-rest") {
+    const redis = await getRestClient();
     await redis.set(REDIS_KEY, words);
     return;
   }
